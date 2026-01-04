@@ -13,6 +13,9 @@
 
 CONFIG_DIR="${XDG_CONFIG_HOME:=$HOME/.config}/dreamhost-dynamicdns" && mkdir -p "$CONFIG_DIR" && chmod 0700 "$CONFIG_DIR"
 CONFIG_FILE="$CONFIG_DIR/config.sh"
+#Default to IPV4
+IPV="4"
+IP_TYPE="A"
 
 if [ -f "$HOME/.config/dynamicdns" ]; then
   echo "Migrating to new config location."
@@ -20,7 +23,7 @@ if [ -f "$HOME/.config/dynamicdns" ]; then
 fi
 
 function usage {
-  echo 'usage:  ' "$(basename "$0")" '[-Sdv][-k API Key] [-r Record] [-i New IP Address] [-L Logging (true/false)]'
+  echo 'usage:  ' "$(basename "$0")" '[-Sdv6][-k API Key] [-r Record] [-i New IP Address] [-L Logging (true/false)]'
 }
 
 function createConfigurationFile {
@@ -104,7 +107,7 @@ function saveConfiguration {
 VERBOSE="false"
 LISTONLY="false"
 #Get Command Line Options
-while getopts "L:i:k:r:Sdvl" OPTS
+while getopts "L:i:k:r:Sdvl6" OPTS
 do
   case $OPTS in
     L)
@@ -116,6 +119,11 @@ do
     fi
 
     OPTLOGGING=$OPTARG
+    ;;
+
+    6)
+    IP_TYPE="AAAA"
+    IPV=6
     ;;
 
     v)
@@ -188,7 +196,7 @@ if [ $VERBOSE = "true" ]; then
   echo "Post process set to: $POSTPROCESS"
 fi
 
-OS_PREREQS=(uuidgen grep egrep awk sed dig)
+OS_PREREQS=(uuidgen grep awk sed dig)
 
 NOT_FOUND=()
 for cmd in "${OS_PREREQS[@]}"; do
@@ -244,28 +252,40 @@ if [ -z "$OPTIP" ]; then
     echo "No IP Address provided, obtaining public IP"
   fi
   # Try multiple resolvers (in case they don't respond)
-  RESOLVERS='
+  RESOLVERS="
     o-o.myaddr.l.google.com:ns1.google.com:TXT
-    myip.opendns.com:resolver1.opendns.com:A
-    whoami.akamai.net:ns1-1.akamaitech.net:A
+    myip.opendns.com:resolver1.opendns.com:$IP_TYPE
+    whoami.akamai.net:ns1-1.akamaitech.net:$IP_TYPE
     o-o.myaddr.l.google.com:ns2.google.com:TXT
-    myip.opendns.com:resolver2.opendns.com:A
+    myip.opendns.com:resolver2.opendns.com:$IP_TYPE
     o-o.myaddr.l.google.com:ns3.google.com:TXT
-    myip.opendns.com:resolver3.opendns.com:A
+    myip.opendns.com:resolver3.opendns.com:$IP_TYPE
     o-o.myaddr.l.google.com:ns4.google.com:TXT
-    myip.opendns.com:resolver4.opendns.com:A
-  '
+    myip.opendns.com:resolver4.opendns.com:$IP_TYPE
+  "
+
   for ENTRY in $RESOLVERS; do
     IFS=':' read -r OWN_HOSTNAME RESOLVER DNS_RECORD <<< "$ENTRY"
-    if IP=$(dig -4 +short "$DNS_RECORD" "$OWN_HOSTNAME" @"$RESOLVER"); then
+    if [ $VERBOSE = "true" ]; then
+      echo "Running: dig -$IPV +short" "$DNS_RECORD" "$OWN_HOSTNAME" @"$RESOLVER"
+    fi
+    if IP=$(dig -$IPV +short "$DNS_RECORD" "$OWN_HOSTNAME" @"$RESOLVER"); then
       break
     fi
-    logStatus "notice" "Failed to obtain current IP address using $RESOLVER"
+    logStatus "notice" "Failed to obtain current IP4 address using $RESOLVER"
   done
+
   IP=${IP//\"/}
-  if [[ ! $IP =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-    logStatus "error" "Failed to obtain current IP address"
-    exit 3
+  if [[ $IP_TYPE == "A" ]]; then
+    if [[ ! $IP =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+      logStatus "error" "Failed to obtain current IPv4 address"
+      exit 3
+    fi
+  else
+    if [[ ! $IP =~ ^([0-9a-fA-F]{1,4}::?){0,8}([0-9a-fA-F]{1,4}:?){0,7}$ ]]; then
+      logStatus "error" "Failed to obtain current IPv6 address"
+      exit 3
+    fi
   fi
   if [ $VERBOSE = "true" ]; then
     echo "Found current public IP: $IP"
@@ -273,6 +293,18 @@ if [ -z "$OPTIP" ]; then
 else IP="$OPTIP"
 fi
 
+function findCurrentRecord {
+  local cleaned_record=$1
+  local list_resp=$2
+  local this_current_record
+  if [[ $IP_TYPE == "A" ]]; then
+    this_current_record=$(echo "$list_resp" | grep -E -o "\s$cleaned_record\s+A\s+[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}")
+  else
+    this_current_record=$(echo "$list_resp" | grep "\s$cleaned_record\s$IP_TYPE\n")
+  fi
+  #Return the current record
+  printf '%s\n' "$this_current_record"
+}
 
 function submitApiRequest {
   local KEY=$1
@@ -320,7 +352,7 @@ function listRecord {
   # Note: If in double quotes don't escape ampersandi (e.g. "a=b&", if out of quotes do (e.g. a=b\&)
 
   local LIST_RESP
-  if ! LIST_RESP=$(submitApiRequest "$KEY" dns-list_records type=A\&editable=1); then
+  if ! LIST_RESP=$(submitApiRequest "$KEY" dns-list_records type=$IP_TYPE\&editable=1); then
     logStatus "notice" "Error Listing Records: $LIST_RESP"
     return 1
   fi
@@ -329,7 +361,12 @@ function listRecord {
   CLEANED_RECORD=$(echo "$RECORD" | sed "s/[*]/[*]/g ; s/[.]/[.]/g ")
 
   local CURRENT_RECORD
-  if ! CURRENT_RECORD=$(echo "$LIST_RESP" | grep "\s$CLEANED_RECORD\sA\n"); then
+  CURRENT_RECORD=$(findCurrentRecord "$CLEANED_RECORD" "$LIST_RESP")
+  if [ $VERBOSE = "true" ]; then
+    #print to stderr
+    printf 'Current Record: %s\n' "$CURRENT_RECORD" >&2
+  fi
+  if [[ "$CURRENT_RECORD" == "" ]]; then
     logStatus "error" "Record '$CLEANED_RECORD' not found"
     return 0
   fi
@@ -353,7 +390,7 @@ function deleteRecord {
   # See whether there is already a record for this domain
 
   local LIST_RESP
-  if ! LIST_RESP=$(submitApiRequest "$KEY" dns-list_records type=A\&editable=1); then
+  if ! LIST_RESP=$(submitApiRequest "$KEY" dns-list_records type=$IP_TYPE\&editable=1); then
     logStatus "notice" "Error Listing Records: $LIST_RESP"
     return 1
   fi
@@ -366,7 +403,12 @@ function deleteRecord {
   fi
 
   local CURRENT_RECORD
-  if ! CURRENT_RECORD=$(echo "$LIST_RESP" | grep -E -o "\s$CLEANED_RECORD\s+A\s+[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}"); then
+  CURRENT_RECORD=$(findCurrentRecord "$CLEANED_RECORD" "$LIST_RESP")
+  if [ $VERBOSE = "true" ]; then
+    #print to stderr
+    printf 'Current Record: %s\n' "$CURRENT_RECORD" >&2
+  fi
+  if [[ "$CURRENT_RECORD" == "" ]]; then
     logStatus "error" "Record not found"
     return 0
   fi
@@ -389,7 +431,7 @@ function deleteRecord {
     #Only print to stderr since this function's stdout value is used.
     printf 'About to delete Old Value: %s\n' "$OLD_VALUE" >&2
   fi
-  if ! submitApiRequest "$KEY" dns-remove_record "record=$RECORD&type=A&value=$OLD_VALUE"; then
+  if ! submitApiRequest "$KEY" dns-remove_record "record=$RECORD&type=$IP_TYPE&value=$OLD_VALUE"; then
     logStatus "error" "Unable to Remove Existing Record"
     printf 'Error: Unable to Remove Old Value: %s\n' "$OLD_VALUE" >&2
     return 2
@@ -406,12 +448,11 @@ function addRecord {
   #the return value from submitApiRequest is the return value here
   submitApiRequest "$KEY" \
                    dns-add_record \
-                   "record=$RECORD&type=A&value=$IP"
+                   "record=$RECORD&type=$IP_TYPE&value=$IP"
 }
 
 # -------------------------------
 # Main execution
-
 if [ "$LISTONLY" == "true" ]; then
 
   # We're just getting the current record
