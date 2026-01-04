@@ -286,6 +286,10 @@ function submitApiRequest {
   # Send request
   local RESPONSE
   if [ $POSTPROCESS = "wget" ]; then
+    if [ $VERBOSE = "true" ]; then
+      #Only print to stderr since stdout here is parsed by calling functions.
+      printf 'In submitApiRequest: wget -O- -q https://api.dreamhost.com --post-data "key=%s&unique_id=%s&cmd=%s&%s\n' "$KEY" "$(uuidgen)" "$CMD" "$ARGS" >&2
+    fi
     RESPONSE=$(wget -O- -q https://api.dreamhost.com/ \
       --post-data "key=$KEY&unique_id=$(uuidgen)&cmd=$CMD&$ARGS" )
   elif [ $POSTPROCESS = "curl" ]; then
@@ -313,6 +317,7 @@ function listRecord {
   local RECORD=$2
 
   # See whether there is already a record for this domain
+  # Note: If in double quotes don't escape ampersandi (e.g. "a=b&", if out of quotes do (e.g. a=b\&)
 
   local LIST_RESP
   if ! LIST_RESP=$(submitApiRequest "$KEY" dns-list_records type=A\&editable=1); then
@@ -384,7 +389,7 @@ function deleteRecord {
     #Only print to stderr since this function's stdout value is used.
     printf 'About to delete Old Value: %s\n' "$OLD_VALUE" >&2
   fi
-  if ! submitApiRequest "$KEY" dns-remove_record "record=$RECORD\&type=A\&value=$OLD_VALUE"; then
+  if ! submitApiRequest "$KEY" dns-remove_record "record=$RECORD&type=A&value=$OLD_VALUE"; then
     logStatus "error" "Unable to Remove Existing Record"
     printf 'Error: Unable to Remove Old Value: %s\n' "$OLD_VALUE" >&2
     return 2
@@ -401,7 +406,7 @@ function addRecord {
   #the return value from submitApiRequest is the return value here
   submitApiRequest "$KEY" \
                    dns-add_record \
-                   "record=$RECORD\&type=A\&value=$IP"
+                   "record=$RECORD&type=A&value=$IP"
 }
 
 # -------------------------------
@@ -438,7 +443,7 @@ else
 
   # Add the new record
 
-  if addRecord "$KEY" "$RECORD" "$IP"; then
+  if ! addRecord "$KEY" "$RECORD" "$IP"; then
     logStatus "alert" "Failed to add new record"
     # In this case, if we have deleted the record, then you will no longer
     # have a DNS record for this domain.
