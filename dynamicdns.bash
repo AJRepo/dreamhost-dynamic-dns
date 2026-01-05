@@ -23,7 +23,38 @@ if [ -f "$HOME/.config/dynamicdns" ]; then
 fi
 
 function usage {
-  echo 'usage:  ' "$(basename "$0")" '[-Sdv6][-k API Key] [-r Record] [-i New IP Address] [-L Logging (true/false)]'
+  echo 'usage:  ' "$(basename "$0")" '[-Sdvl6][-k API Key] [-r Record] [-i New IP Address] [-L Logging (true/false)]'
+}
+
+function help {
+  usage
+  cat << EOF
+  The options are as follows:
+
+    -S Save any options provided via the command line to the configuration file.
+
+    -d Save any options provided via the command line to the configuration file and do not update DNS.
+
+    -v Enable verbose mode.
+
+    -l Enable list-only mode, showing only current value returned by the Dreamhost API.
+
+    -k API Key
+    Dreamhost API Key with dns-list_records, dns-remove_record, and dns-add_record permissions.
+
+    -r Record
+    The DNS Record to be updated.
+
+    -i IP Address
+    Specify the IPv4 Address to update the Record to.
+    If no address is specified, the utility will use dig to
+    obtain the current public IPv4 Address of your computer.
+
+    -L (true/false)
+    Enables system logging via the logger command. The configuration file sets logging to true by default.
+
+EOF
+
 }
 
 function createConfigurationFile {
@@ -107,7 +138,7 @@ function saveConfiguration {
 VERBOSE="false"
 LISTONLY="false"
 #Get Command Line Options
-while getopts "L:i:k:r:Sdvl6" OPTS
+while getopts "L:i:k:r:Sdvhl6" OPTS
 do
   case $OPTS in
     L)
@@ -124,6 +155,11 @@ do
     6)
     IP_TYPE="AAAA"
     IPV=6
+    ;;
+
+    h)
+    help
+    exit 0
     ;;
 
     v)
