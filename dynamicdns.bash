@@ -23,7 +23,7 @@ if [ -f "$HOME/.config/dynamicdns" ]; then
 fi
 
 function usage {
-  echo 'usage:  ' "$(basename "$0")" '[-Sdvl6][-k API Key] [-r Record] [-i New IP Address] [-L Logging (true/false)]'
+  echo 'usage:  ' "$(basename "$0")" '[-Sdvlh6][-k API Key] [-r Record] [-i New IP Address] [-L Logging (true/false)]'
 }
 
 function help {
@@ -34,6 +34,8 @@ function help {
     -S Save any options provided via the command line to the configuration file.
 
     -d Save any options provided via the command line to the configuration file and do not update DNS.
+
+    -h this help text
 
     -v Enable verbose mode.
 
