@@ -56,8 +56,64 @@ function help {
     Enables system logging via the logger command. The configuration file sets logging to true by default.
 
 EOF
-
 }
+
+# Function to validate IPv4
+function is_ipv4 {
+    [[ $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+}
+
+# Function to validate IPv6
+function is_ipv6 {
+    [[ $1 =~ ^([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}$ ]]
+}
+
+# Function to get IP from a given service and regex pattern
+function get_ip {
+  if [ $VERBOSE = "true" ]; then
+    echo "No IP Address provided, obtaining public IP"
+  fi
+  # Try multiple resolvers (in case they don't respond)
+  RESOLVERS="
+    o-o.myaddr.l.google.com:ns1.google.com:TXT
+    myip.opendns.com:resolver1.opendns.com:$IP_TYPE
+    whoami.akamai.net:ns1-1.akamaitech.net:$IP_TYPE
+    o-o.myaddr.l.google.com:ns2.google.com:TXT
+    myip.opendns.com:resolver2.opendns.com:$IP_TYPE
+    o-o.myaddr.l.google.com:ns3.google.com:TXT
+    myip.opendns.com:resolver3.opendns.com:$IP_TYPE
+    o-o.myaddr.l.google.com:ns4.google.com:TXT
+    myip.opendns.com:resolver4.opendns.com:$IP_TYPE
+  "
+
+  for ENTRY in $RESOLVERS; do
+    IFS=':' read -r OWN_HOSTNAME RESOLVER DNS_RECORD <<< "$ENTRY"
+    if [ $VERBOSE = "true" ]; then
+      echo "Running: dig -$IPV +short" "$DNS_RECORD" "$OWN_HOSTNAME" @"$RESOLVER"
+    fi
+    if IP=$(dig -$IPV +short "$DNS_RECORD" "$OWN_HOSTNAME" @"$RESOLVER"); then
+      break
+    fi
+    logStatus "notice" "Failed to obtain current IP4 address using $RESOLVER"
+  done
+
+  IP=${IP//\"/}
+  if [[ $IP_TYPE == "A" ]]; then
+    if ! is_ipv4 "$IP"; then
+      logStatus "error" "Failed to obtain current IPv4 address"
+      exit 3
+    fi
+  else
+    if ! is_ipv6 "$IP"; then
+      logStatus "error" "Failed to obtain current IPv6 address"
+      exit 3
+    fi
+  fi
+  if [ $VERBOSE = "true" ]; then
+    echo "Found current public IP: $IP"
+  fi
+}
+
 
 function createConfigurationFile {
   umask 077
@@ -286,49 +342,9 @@ if [ "$SAVEONLY" == "true" ]; then
 fi
 
 if [ -z "$OPTIP" ]; then
-  if [ $VERBOSE = "true" ]; then
-    echo "No IP Address provided, obtaining public IP"
-  fi
-  # Try multiple resolvers (in case they don't respond)
-  RESOLVERS="
-    o-o.myaddr.l.google.com:ns1.google.com:TXT
-    myip.opendns.com:resolver1.opendns.com:$IP_TYPE
-    whoami.akamai.net:ns1-1.akamaitech.net:$IP_TYPE
-    o-o.myaddr.l.google.com:ns2.google.com:TXT
-    myip.opendns.com:resolver2.opendns.com:$IP_TYPE
-    o-o.myaddr.l.google.com:ns3.google.com:TXT
-    myip.opendns.com:resolver3.opendns.com:$IP_TYPE
-    o-o.myaddr.l.google.com:ns4.google.com:TXT
-    myip.opendns.com:resolver4.opendns.com:$IP_TYPE
-  "
-
-  for ENTRY in $RESOLVERS; do
-    IFS=':' read -r OWN_HOSTNAME RESOLVER DNS_RECORD <<< "$ENTRY"
-    if [ $VERBOSE = "true" ]; then
-      echo "Running: dig -$IPV +short" "$DNS_RECORD" "$OWN_HOSTNAME" @"$RESOLVER"
-    fi
-    if IP=$(dig -$IPV +short "$DNS_RECORD" "$OWN_HOSTNAME" @"$RESOLVER"); then
-      break
-    fi
-    logStatus "notice" "Failed to obtain current IP4 address using $RESOLVER"
-  done
-
-  IP=${IP//\"/}
-  if [[ $IP_TYPE == "A" ]]; then
-    if [[ ! $IP =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-      logStatus "error" "Failed to obtain current IPv4 address"
-      exit 3
-    fi
-  else
-    if [[ ! $IP =~ ^([0-9a-fA-F]{1,4}::?){0,8}([0-9a-fA-F]{1,4}:?){0,7}$ ]]; then
-      logStatus "error" "Failed to obtain current IPv6 address"
-      exit 3
-    fi
-  fi
-  if [ $VERBOSE = "true" ]; then
-    echo "Found current public IP: $IP"
-  fi
-else IP="$OPTIP"
+  get_ip
+else
+  IP="$OPTIP"
 fi
 
 function findCurrentRecord {
