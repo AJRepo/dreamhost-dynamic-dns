@@ -8,9 +8,7 @@ if [ ! -x /usr/local/bin/dynamicdns.bash ]; then
   exit 1
 fi
 
-read -r -p "About to create user $NEWUSER, press Ctrl-C to abort"
-
-
+read -r -p "About to create user $NEWUSER, press Ctrl-C to abort. Enter to continue."
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin $NEWUSER
 USERADD_STATUS=$?
 
@@ -41,4 +39,5 @@ sudo systemctl start dreamhost-dynamic-dns.timer
 echo "Installed systemd service. Run 'systemctl list-timers --all' to check"
 
 echo "Testing that API KEY exists and is accessible by $NEWUSER"
+read -r -p "This uses '-v' Verbose which will disclose your dremhost API to the screen, press Ctrl-C to abort"
 sudo -u $NEWUSER /usr/local/bin/dynamicdns.bash -l -v
