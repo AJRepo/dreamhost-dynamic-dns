@@ -14,8 +14,8 @@
 CONFIG_DIR="${XDG_CONFIG_HOME:=$HOME/.config}/dreamhost-dynamicdns" && mkdir -p "$CONFIG_DIR" && chmod 0700 "$CONFIG_DIR"
 CONFIG_FILE="$CONFIG_DIR/config.sh"
 #Default to IPV4
-IPV="4"
 IP_TYPE="A"
+IP4_ONLY="false"
 
 if [ -f "$HOME/.config/dynamicdns" ]; then
   echo "Migrating to new config location."
@@ -23,7 +23,7 @@ if [ -f "$HOME/.config/dynamicdns" ]; then
 fi
 
 function usage {
-  echo 'usage:  ' "$(basename "$0")" '[-Sdvlh6][-k API Key] [-r Record] [-i New IP Address] [-L Logging (true/false)]'
+  echo 'usage:  ' "$(basename "$0")" '[-Sdvlh46][-k API Key] [-r Record] [-i New IP Address] [-L Logging (true/false)]'
 }
 
 function help {
@@ -36,6 +36,10 @@ function help {
     -d Save any options provided via the command line to the configuration file and do not update DNS.
 
     -h this help text
+
+    -4 IPv4 only (Otherwise will try IPv4 first and then fall back to IPv6)
+
+    -6 IPv6 only. (Only use IPv6)
 
     -v Enable verbose mode.
 
@@ -70,48 +74,43 @@ function is_ipv6 {
 
 # Function to get IP from a given service and regex pattern
 function get_ip {
-  if [ $VERBOSE = "true" ]; then
-    echo "No IP Address provided, obtaining public IP"
+  local this_IPV=$1
+  local this_IP_TYPE
+  if [[ "$this_IPV" == 4 ]]; then
+    this_IP_TYPE="A"
+  else
+    this_IP_TYPE="AAAA"
+  fi
+  if [ "$VERBOSE" = "true" ]; then
+    echo "No IP Address provided, obtaining public IP" >&2
   fi
   # Try multiple resolvers (in case they don't respond)
   RESOLVERS="
     o-o.myaddr.l.google.com:ns1.google.com:TXT
-    myip.opendns.com:resolver1.opendns.com:$IP_TYPE
-    whoami.akamai.net:ns1-1.akamaitech.net:$IP_TYPE
+    myip.opendns.com:resolver1.opendns.com:$this_IP_TYPE
+    whoami.akamai.net:ns1-1.akamaitech.net:$this_IP_TYPE
     o-o.myaddr.l.google.com:ns2.google.com:TXT
-    myip.opendns.com:resolver2.opendns.com:$IP_TYPE
+    myip.opendns.com:resolver2.opendns.com:$this_IP_TYPE
     o-o.myaddr.l.google.com:ns3.google.com:TXT
-    myip.opendns.com:resolver3.opendns.com:$IP_TYPE
+    myip.opendns.com:resolver3.opendns.com:$this_IP_TYPE
     o-o.myaddr.l.google.com:ns4.google.com:TXT
-    myip.opendns.com:resolver4.opendns.com:$IP_TYPE
+    myip.opendns.com:resolver4.opendns.com:$this_IP_TYPE
   "
 
   for ENTRY in $RESOLVERS; do
     IFS=':' read -r OWN_HOSTNAME RESOLVER DNS_RECORD <<< "$ENTRY"
-    if [ $VERBOSE = "true" ]; then
-      echo "Running: dig -$IPV +short" "$DNS_RECORD" "$OWN_HOSTNAME" @"$RESOLVER"
+    if [ "$VERBOSE" = "true" ]; then
+      echo "Running: dig -$this_IPV +short" "$DNS_RECORD" "$OWN_HOSTNAME" @"$RESOLVER" >&2
     fi
-    if IP=$(dig -$IPV +short "$DNS_RECORD" "$OWN_HOSTNAME" @"$RESOLVER"); then
+    if IP=$(dig -"$this_IPV" +short "$DNS_RECORD" "$OWN_HOSTNAME" @"$RESOLVER"); then
       break
     fi
-    logStatus "notice" "Failed to obtain current IP4 address using $RESOLVER"
+    logStatus "notice" "Failed to obtain current IP$this_IPV address using $RESOLVER"
   done
 
   IP=${IP//\"/}
-  if [[ $IP_TYPE == "A" ]]; then
-    if ! is_ipv4 "$IP"; then
-      logStatus "error" "Failed to obtain current IPv4 address"
-      exit 3
-    fi
-  else
-    if ! is_ipv6 "$IP"; then
-      logStatus "error" "Failed to obtain current IPv6 address"
-      exit 3
-    fi
-  fi
-  if [ $VERBOSE = "true" ]; then
-    echo "Found current public IP: $IP"
-  fi
+
+  echo "$IP"
 }
 
 
@@ -196,7 +195,7 @@ function saveConfiguration {
 VERBOSE="false"
 LISTONLY="false"
 #Get Command Line Options
-while getopts "L:i:k:r:Sdvhl6" OPTS
+while getopts "L:i:k:r:Sdvhl46" OPTS
 do
   case $OPTS in
     L)
@@ -210,9 +209,13 @@ do
     OPTLOGGING=$OPTARG
     ;;
 
+    4)
+    IP_TYPE="A"
+    IP4_ONLY="true"
+    ;;
+
     6)
     IP_TYPE="AAAA"
-    IPV=6
     ;;
 
     h)
@@ -342,7 +345,34 @@ if [ "$SAVEONLY" == "true" ]; then
 fi
 
 if [ -z "$OPTIP" ]; then
-  get_ip
+  #Test for IP4 first unless the -6 flag is set (IPV6 only)
+  if [[ $IP_TYPE == "A" ]]; then
+    IP=$(get_ip 4)
+    if ! is_ipv4 "$IP"; then
+      #fallback to IP6? 
+      if [[ "$IP4_ONLY" == "true" ]]; then
+        logStatus "error" "Failed to obtain current IPv4 address. No fallback to IPv6"
+        exit 3
+      else
+        echo "Attempting IPv6 as IPv4 failed" >&2
+        IP_TYPE="AAAA"
+        IP=$(get_ip 6)
+        if ! is_ipv6 "$IP"; then
+          logStatus "error" "Failed to obtain current IPv4 OR IPv6 address"
+          exit 3
+        fi
+      fi
+    fi
+  else
+    IP=$(get_ip 6)
+    if ! is_ipv6 "$IP"; then
+      logStatus "error" "Failed to obtain current IPv6 address"
+      exit 3
+    fi
+  fi
+  if [ $VERBOSE = "true" ]; then
+    echo "Found current public IP: $IP" >&2
+  fi
 else
   IP="$OPTIP"
 fi
@@ -350,11 +380,12 @@ fi
 function findCurrentRecord {
   local cleaned_record=$1
   local list_resp=$2
+  local this_ip_type=$3
   local this_current_record
-  if [[ $IP_TYPE == "A" ]]; then
-    this_current_record=$(echo "$list_resp" | grep -E -o "\s$cleaned_record\s+A\s+[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}")
+  if [[ $this_ip_type == "A" ]]; then
+    this_current_record=$(echo "$list_resp" | grep -E -o "\s$cleaned_record\s+$this_ip_type\s+[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}")
   else
-    this_current_record=$(echo "$list_resp" | grep "\s$cleaned_record\s$IP_TYPE\n")
+    this_current_record=$(echo "$list_resp" | grep "\s$cleaned_record\s$this_ip_type\n")
   fi
   #Return the current record
   printf '%s\n' "$this_current_record"
@@ -415,7 +446,7 @@ function listRecord {
   CLEANED_RECORD=$(echo "$RECORD" | sed "s/[*]/[*]/g ; s/[.]/[.]/g ")
 
   local CURRENT_RECORD
-  CURRENT_RECORD=$(findCurrentRecord "$CLEANED_RECORD" "$LIST_RESP")
+  CURRENT_RECORD=$(findCurrentRecord "$CLEANED_RECORD" "$LIST_RESP" "$IP_TYPE")
   if [ $VERBOSE = "true" ]; then
     #print to stderr
     printf 'Current Record: %s\n' "$CURRENT_RECORD" >&2
@@ -457,7 +488,7 @@ function deleteRecord {
   fi
 
   local CURRENT_RECORD
-  CURRENT_RECORD=$(findCurrentRecord "$CLEANED_RECORD" "$LIST_RESP")
+  CURRENT_RECORD=$(findCurrentRecord "$CLEANED_RECORD" "$LIST_RESP" "$IP_TYPE")
   if [ $VERBOSE = "true" ]; then
     #print to stderr
     printf 'Current Record: %s\n' "$CURRENT_RECORD" >&2
